@@ -4,6 +4,8 @@ import type { AssistantMessage, Message } from "@opencode-ai/sdk/v2";
 import { createSignal, createEffect, Show, For, onCleanup } from "solid-js";
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
 
+const CONTEXT_DEPTH = 5;
+
 const tui: TuiPlugin = async (api) => {
   const [visible, setVisible] = createSignal(false);
   const [question, setQuestion] = createSignal("");
@@ -33,7 +35,36 @@ const tui: TuiPlugin = async (api) => {
     }
   }
 
-  async function ask(q: string) {
+  function gatherContext(mainSessionID: string): string {
+    const msgs = api.state.session.messages(mainSessionID);
+    if (!msgs || msgs.length === 0) return "";
+
+    const recent = msgs.slice(-CONTEXT_DEPTH);
+    const lines: string[] = [];
+
+    for (const msg of recent) {
+      const role = msg.role === "user" ? "user" : "assistant";
+      const msgParts = api.state.part(msg.id);
+      if (!msgParts) continue;
+
+      const text = msgParts
+        .filter((p: any) => p.type === "text" && "text" in p)
+        .map((p: any) => String(p.text ?? ""))
+        .join("\n")
+        .slice(0, 2000);
+
+      if (text.trim()) lines.push(`[${role}]: ${text}`);
+    }
+
+    if (lines.length === 0) return "";
+    return (
+      "Here is the recent conversation context from the current session:\n\n" +
+      lines.join("\n\n") +
+      "\n\n---\n\n"
+    );
+  }
+
+  async function ask(q: string, mainSessionID?: string) {
     if (visible()) await dismiss();
 
     setVisible(true);
@@ -41,6 +72,9 @@ const tui: TuiPlugin = async (api) => {
     setParts([]);
     setDone(false);
     setSessionID(null);
+
+    const context = mainSessionID ? gatherContext(mainSessionID) : "";
+    const fullPrompt = context + "Question: " + q;
 
     try {
       const session = await api.client.session.create({});
@@ -54,7 +88,7 @@ const tui: TuiPlugin = async (api) => {
 
       await api.client.session.prompt({
         sessionID: sid,
-        parts: [{ type: "text" as const, text: q }],
+        parts: [{ type: "text" as const, text: fullPrompt }],
       });
     } catch {
       reset();
@@ -73,7 +107,8 @@ const tui: TuiPlugin = async (api) => {
         if (!args.trim()) return false;
         const route = api.route.current;
         if (route.name !== "session" || !route.params) return false;
-        pendingOp = pendingOp.then(() => ask(args.trim()));
+        const mainSessionID = (route.params as any).sessionID as string;
+        pendingOp = pendingOp.then(() => ask(args.trim(), mainSessionID));
         return true;
       },
     },

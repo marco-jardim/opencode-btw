@@ -51,12 +51,16 @@ type MockSession = {
   deleted: boolean;
 };
 
+type MockMessage = { id: string; role: string };
+
 function createMockApi(
   overrides: {
     route?: { name: string; params?: Record<string, string> };
     createFails?: boolean;
     createReturnsNoData?: boolean;
     promptFails?: boolean;
+    mainSessionMessages?: MockMessage[];
+    partData?: Record<string, Array<{ type: string; text?: string }>>;
   } = {},
 ) {
   const sessions: MockSession[] = [];
@@ -107,10 +111,17 @@ function createMockApi(
     },
     state: {
       session: {
-        messages: () => [],
+        messages: (sid: string) => {
+          if (sid === "main-session")
+            return overrides.mainSessionMessages ?? [];
+          return [];
+        },
         status: () => undefined,
       },
-      part: () => [],
+      part: (msgId: string) => {
+        if (overrides.partData?.[msgId]) return overrides.partData[msgId];
+        return [];
+      },
     },
     theme: {
       current: {
@@ -251,7 +262,7 @@ describe("session lifecycle", () => {
     const call = api.client.session.prompt.mock.calls[0];
     expect(call[0].sessionID).toBe("session-1");
     expect(call[0].parts).toEqual([
-      { type: "text", text: "what is typescript" },
+      { type: "text", text: "Question: what is typescript" },
     ]);
   });
 
@@ -261,7 +272,7 @@ describe("session lifecycle", () => {
     await new Promise((r) => setTimeout(r, 50));
 
     const call = api.client.session.prompt.mock.calls[0];
-    expect(call[0].parts[0].text).toBe("hello world");
+    expect(call[0].parts[0].text).toBe("Question: hello world");
   });
 
   test("resets on session.create failure", async () => {
@@ -327,7 +338,7 @@ describe("sequential invocations", () => {
       api.client.session.prompt.mock.calls[
         api.client.session.prompt.mock.calls.length - 1
       ];
-    expect(lastCall[0].parts[0].text).toBe("third");
+    expect(lastCall[0].parts[0].text).toBe("Question: third");
   });
 });
 
@@ -375,7 +386,7 @@ describe("edge cases", () => {
 
     const call = api.client.session.prompt.mock.calls[0];
     expect(call[0].parts[0].text).toBe(
-      'what is "TypeScript" & how <does> it work?',
+      'Question: what is "TypeScript" & how <does> it work?',
     );
   });
 
@@ -385,7 +396,9 @@ describe("edge cases", () => {
     await new Promise((r) => setTimeout(r, 50));
 
     const call = api.client.session.prompt.mock.calls[0];
-    expect(call[0].parts[0].text).toBe("o que é programação funcional? 🤔");
+    expect(call[0].parts[0].text).toBe(
+      "Question: o que é programação funcional? 🤔",
+    );
   });
 
   test("handles 10k char question", async () => {
@@ -395,7 +408,7 @@ describe("edge cases", () => {
     await new Promise((r) => setTimeout(r, 50));
 
     const call = api.client.session.prompt.mock.calls[0];
-    expect(call[0].parts[0].text).toBe(longQ);
+    expect(call[0].parts[0].text).toBe("Question: " + longQ);
   });
 
   test("preserves newlines in question body", async () => {
@@ -404,7 +417,7 @@ describe("edge cases", () => {
     await new Promise((r) => setTimeout(r, 50));
 
     const call = api.client.session.prompt.mock.calls[0];
-    expect(call[0].parts[0].text).toBe("line one\nline two");
+    expect(call[0].parts[0].text).toBe("Question: line one\nline two");
   });
 });
 
@@ -438,5 +451,180 @@ describe("package.json", () => {
 
   test("has MIT license", () => {
     expect(pkg.license).toBe("MIT");
+  });
+});
+
+// ── session context ─────────────────────────────────────────────────────────
+
+describe("session context", () => {
+  test("includes context from main session messages", async () => {
+    const { btwCommand, api } = await setupPlugin({
+      mainSessionMessages: [
+        { id: "msg-1", role: "user" },
+        { id: "msg-2", role: "assistant" },
+      ],
+      partData: {
+        "msg-1": [{ type: "text", text: "What is TypeScript?" }],
+        "msg-2": [
+          {
+            type: "text",
+            text: "TypeScript is a typed superset of JavaScript.",
+          },
+        ],
+      },
+    });
+    btwCommand.onSlashSubmit("follow up question");
+    await new Promise((r) => setTimeout(r, 50));
+
+    const call = api.client.session.prompt.mock.calls[0];
+    const text = call[0].parts[0].text as string;
+
+    expect(text).toContain("Here is the recent conversation context");
+    expect(text).toContain("[user]: What is TypeScript?");
+    expect(text).toContain(
+      "[assistant]: TypeScript is a typed superset of JavaScript.",
+    );
+    expect(text).toContain("---");
+    expect(text).toContain("Question: follow up question");
+  });
+
+  test("sends no context when main session has no messages", async () => {
+    const { btwCommand, api } = await setupPlugin({
+      mainSessionMessages: [],
+    });
+    btwCommand.onSlashSubmit("standalone question");
+    await new Promise((r) => setTimeout(r, 50));
+
+    const call = api.client.session.prompt.mock.calls[0];
+    const text = call[0].parts[0].text as string;
+
+    expect(text).toBe("Question: standalone question");
+    expect(text).not.toContain("conversation context");
+  });
+
+  test("limits context to last 5 messages", async () => {
+    const msgs = Array.from({ length: 8 }, (_, i) => ({
+      id: `msg-${i}`,
+      role: i % 2 === 0 ? "user" : "assistant",
+    }));
+    const partData: Record<string, Array<{ type: string; text: string }>> = {};
+    for (let i = 0; i < 8; i++) {
+      partData[`msg-${i}`] = [{ type: "text", text: `Message ${i}` }];
+    }
+
+    const { btwCommand, api } = await setupPlugin({
+      mainSessionMessages: msgs,
+      partData,
+    });
+    btwCommand.onSlashSubmit("test");
+    await new Promise((r) => setTimeout(r, 50));
+
+    const call = api.client.session.prompt.mock.calls[0];
+    const text = call[0].parts[0].text as string;
+
+    // Messages 0-2 should NOT be included (only last 5: 3,4,5,6,7)
+    expect(text).not.toContain("Message 0");
+    expect(text).not.toContain("Message 1");
+    expect(text).not.toContain("Message 2");
+    expect(text).toContain("Message 3");
+    expect(text).toContain("Message 7");
+  });
+
+  test("truncates long messages to 2000 chars", async () => {
+    const longText = "x".repeat(3000);
+    const { btwCommand, api } = await setupPlugin({
+      mainSessionMessages: [{ id: "msg-long", role: "user" }],
+      partData: {
+        "msg-long": [{ type: "text", text: longText }],
+      },
+    });
+    btwCommand.onSlashSubmit("test");
+    await new Promise((r) => setTimeout(r, 50));
+
+    const call = api.client.session.prompt.mock.calls[0];
+    const text = call[0].parts[0].text as string;
+
+    // The context should contain the truncated text, not the full 3000 chars
+    expect(text).toContain("[user]:");
+    // Extract the user message from context
+    const match = text.match(/\[user\]: (x+)/);
+    expect(match).toBeTruthy();
+    expect(match![1].length).toBe(2000);
+  });
+
+  test("skips messages with no text parts", async () => {
+    const { btwCommand, api } = await setupPlugin({
+      mainSessionMessages: [
+        { id: "msg-tool", role: "assistant" },
+        { id: "msg-text", role: "user" },
+      ],
+      partData: {
+        "msg-tool": [{ type: "tool-invocation", toolName: "readFile" } as any],
+        "msg-text": [{ type: "text", text: "real message" }],
+      },
+    });
+    btwCommand.onSlashSubmit("test");
+    await new Promise((r) => setTimeout(r, 50));
+
+    const call = api.client.session.prompt.mock.calls[0];
+    const text = call[0].parts[0].text as string;
+
+    expect(text).toContain("[user]: real message");
+    expect(text).not.toContain("[assistant]");
+  });
+
+  test("skips messages with empty text", async () => {
+    const { btwCommand, api } = await setupPlugin({
+      mainSessionMessages: [
+        { id: "msg-empty", role: "user" },
+        { id: "msg-ok", role: "assistant" },
+      ],
+      partData: {
+        "msg-empty": [{ type: "text", text: "   " }],
+        "msg-ok": [{ type: "text", text: "answer" }],
+      },
+    });
+    btwCommand.onSlashSubmit("test");
+    await new Promise((r) => setTimeout(r, 50));
+
+    const call = api.client.session.prompt.mock.calls[0];
+    const text = call[0].parts[0].text as string;
+
+    expect(text).toContain("[assistant]: answer");
+    expect(text).not.toContain("[user]:");
+  });
+
+  test("joins multiple text parts in a single message", async () => {
+    const { btwCommand, api } = await setupPlugin({
+      mainSessionMessages: [{ id: "msg-multi", role: "assistant" }],
+      partData: {
+        "msg-multi": [
+          { type: "text", text: "Part one." },
+          { type: "text", text: "Part two." },
+        ],
+      },
+    });
+    btwCommand.onSlashSubmit("test");
+    await new Promise((r) => setTimeout(r, 50));
+
+    const call = api.client.session.prompt.mock.calls[0];
+    const text = call[0].parts[0].text as string;
+
+    expect(text).toContain("[assistant]: Part one.\nPart two.");
+  });
+
+  test("handles null partData gracefully", async () => {
+    const { btwCommand, api } = await setupPlugin({
+      mainSessionMessages: [{ id: "msg-noparts", role: "user" }],
+      // no partData for this message, mock returns []
+    });
+    btwCommand.onSlashSubmit("test");
+    await new Promise((r) => setTimeout(r, 50));
+
+    const call = api.client.session.prompt.mock.calls[0];
+    const text = call[0].parts[0].text as string;
+
+    // No context gathered (empty parts), so just the question
+    expect(text).toBe("Question: test");
   });
 });
