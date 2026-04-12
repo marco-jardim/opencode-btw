@@ -1,86 +1,64 @@
+/** @jsxImportSource @opentui/solid */
 import type { TuiPluginModule, TuiPlugin } from "@opencode-ai/plugin/tui";
 import type { AssistantMessage, Message } from "@opencode-ai/sdk/v2";
 import { createSignal, createEffect, Show, For, onCleanup } from "solid-js";
-import { useKeyHandler, useTerminalDimensions } from "@opentui/solid";
-
-interface BtwState {
-  visible: boolean;
-  sessionID: string | null;
-  question: string;
-  parts: Array<{ type: string; text?: string }>;
-  done: boolean;
-}
+import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
 
 const tui: TuiPlugin = async (api) => {
-  const [state, setState] = createSignal<BtwState>({
-    visible: false,
-    sessionID: null,
-    question: "",
-    parts: [],
-    done: false,
-  });
+  const [visible, setVisible] = createSignal(false);
+  const [question, setQuestion] = createSignal("");
+  const [parts, setParts] = createSignal<Array<{ text: string }>>([]);
+  const [done, setDone] = createSignal(false);
+  const [sessionID, setSessionID] = createSignal<string | null>(null);
 
   let pendingOp: Promise<void> = Promise.resolve();
 
+  function reset() {
+    setVisible(false);
+    setQuestion("");
+    setParts([]);
+    setDone(false);
+    setSessionID(null);
+  }
+
   async function dismiss() {
-    const s = state();
-    if (s.sessionID) {
+    setVisible(false);
+    const sid = sessionID();
+    reset();
+    if (sid) {
       try {
-        if (!s.done) {
-          await api.client.session.abort({ sessionID: s.sessionID });
-        }
-        await api.client.session.delete({ sessionID: s.sessionID });
-      } catch {
-        // best effort
-      }
+        await api.client.session.abort({ sessionID: sid }).catch(() => {});
+        await api.client.session.delete({ sessionID: sid }).catch(() => {});
+      } catch {}
     }
-    setState({
-      visible: false,
-      sessionID: null,
-      question: "",
-      parts: [],
-      done: false,
-    });
   }
 
-  function safeDismiss() {
-    pendingOp = pendingOp.then(() => dismiss());
-    return pendingOp;
-  }
+  async function ask(q: string) {
+    if (visible()) await dismiss();
 
-  async function ask(question: string) {
-    if (state().visible) await dismiss();
-
-    setState({
-      visible: true,
-      sessionID: null,
-      question,
-      parts: [],
-      done: false,
-    });
+    setVisible(true);
+    setQuestion(q);
+    setParts([]);
+    setDone(false);
+    setSessionID(null);
 
     try {
       const session = await api.client.session.create({});
       if (!session.data) {
-        setState((s) => ({ ...s, visible: false }));
+        reset();
         return;
       }
 
-      const sessionID = session.data.id;
-      setState((s) => ({ ...s, sessionID }));
+      const sid = session.data.id;
+      setSessionID(sid);
 
       await api.client.session.prompt({
-        sessionID,
-        parts: [{ type: "text" as const, text: question }],
+        sessionID: sid,
+        parts: [{ type: "text" as const, text: q }],
       });
     } catch {
-      setState((s) => ({ ...s, visible: false }));
+      reset();
     }
-  }
-
-  function safeAsk(question: string) {
-    pendingOp = pendingOp.then(() => ask(question));
-    return pendingOp;
   }
 
   api.command.register(() => [
@@ -95,7 +73,7 @@ const tui: TuiPlugin = async (api) => {
         if (!args.trim()) return false;
         const route = api.route.current;
         if (route.name !== "session" || !route.params) return false;
-        safeAsk(args.trim());
+        pendingOp = pendingOp.then(() => ask(args.trim()));
         return true;
       },
     },
@@ -106,17 +84,19 @@ const tui: TuiPlugin = async (api) => {
     slots: {
       session_above_prompt(_ctx, _props) {
         const theme = () => api.theme.current;
-        const s = state;
         const dims = useTerminalDimensions();
-        const borderWidth = () =>
-          Math.max(20, Math.min(60, (dims().width ?? 80) - 4));
+
+        // session container: paddingLeft=2 + paddingRight=2 = 4
+        // our box: paddingLeft=1 + paddingRight=1 = 2
+        // total padding: 6, plus 2 for border chars = 8
+        const borderWidth = () => Math.max(20, (dims().width ?? 80) - 8);
         const borderTop = () =>
           "┌─ btw " + "─".repeat(Math.max(0, borderWidth() - 8)) + "┐";
         const borderBot = () =>
           "└" + "─".repeat(Math.max(0, borderWidth() - 2)) + "┘";
 
         createEffect(() => {
-          const sid = s().sessionID;
+          const sid = sessionID();
           if (!sid) return;
 
           const msgs = api.state.session.messages(sid);
@@ -134,52 +114,45 @@ const tui: TuiPlugin = async (api) => {
 
           const textParts = [...msgParts]
             .filter((p) => p.type === "text" && "text" in p)
-            .map((p) => ({
-              type: "text" as const,
-              text: String((p as any).text ?? ""),
-            }));
+            .map((p) => ({ text: String((p as any).text ?? "") }));
 
-          setState((prev) => ({ ...prev, parts: textParts }));
+          setParts(textParts);
 
           const status = api.state.session.status(sid);
           if (!status || status.type === "idle") {
-            setState((prev) => ({ ...prev, done: true }));
+            setDone(true);
           }
         });
 
-        onCleanup(() => {
-          dismiss();
-        });
-
-        useKeyHandler((evt) => {
-          if (evt.defaultPrevented) return;
-          if (!s().visible) return;
-          if (evt.name === "escape") {
+        useKeyboard((evt) => {
+          if (!visible()) return;
+          if (evt.ctrl && evt.name === "b") {
+            evt.preventDefault();
             evt.stopPropagation();
-            safeDismiss();
+            dismiss();
           }
         });
 
         return (
-          <Show when={s().visible}>
+          <Show when={visible()}>
             <box flexShrink={0} paddingLeft={1} paddingRight={1} marginTop={1}>
               <text fg={theme().textMuted}>{borderTop()}</text>
               <box paddingLeft={2} paddingRight={2}>
                 <text fg={theme().accent}>
-                  <b>Q:</b> {s().question}
+                  <b>Q:</b> {question()}
                 </text>
                 <Show
-                  when={s().parts.length > 0}
+                  when={parts().length > 0}
                   fallback={<text fg={theme().textMuted}>thinking...</text>}
                 >
                   <text>{""}</text>
-                  <For each={s().parts}>
-                    {(part) => <text fg={theme().text}>{part.text ?? ""}</text>}
+                  <For each={parts()}>
+                    {(part) => <text fg={theme().text}>{part.text}</text>}
                   </For>
                 </Show>
-                <Show when={s().done}>
+                <Show when={done()}>
                   <text>{""}</text>
-                  <text fg={theme().textMuted}>press Esc to dismiss</text>
+                  <text fg={theme().textMuted}>press Ctrl+B to dismiss</text>
                 </Show>
               </box>
               <text fg={theme().textMuted}>{borderBot()}</text>
@@ -191,5 +164,5 @@ const tui: TuiPlugin = async (api) => {
   });
 };
 
-const plugin: TuiPluginModule = { tui };
+const plugin: TuiPluginModule = { id: "opencode-btw", tui };
 export default plugin;
