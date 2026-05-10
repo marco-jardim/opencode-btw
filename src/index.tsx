@@ -2,7 +2,7 @@
 import type { TuiPluginModule, TuiPlugin } from "@opencode-ai/plugin/tui";
 import type { AssistantMessage, Message } from "@opencode-ai/sdk/v2";
 import { createSignal, createEffect, Show, For, onCleanup } from "solid-js";
-import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
+import { useTerminalDimensions } from "@opentui/solid";
 
 const CONTEXT_DEPTH = 5;
 
@@ -112,6 +112,14 @@ const tui: TuiPlugin = async (api) => {
         return true;
       },
     },
+    {
+      title: "Dismiss btw panel",
+      value: "btw.dismiss",
+      hidden: true,
+      keybind: "ctrl+b",
+      enabled: () => visible(),
+      onSelect: () => dismiss(),
+    },
   ]);
 
   api.slots.register({
@@ -156,15 +164,6 @@ const tui: TuiPlugin = async (api) => {
           const status = api.state.session.status(sid);
           if (!status || status.type === "idle") {
             setDone(true);
-          }
-        });
-
-        useKeyboard((evt) => {
-          if (!visible()) return;
-          if (evt.ctrl && evt.name === "b") {
-            evt.preventDefault();
-            evt.stopPropagation();
-            dismiss();
           }
         });
 
