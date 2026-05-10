@@ -116,7 +116,7 @@ const tui: TuiPlugin = async (api) => {
       title: "Dismiss btw panel",
       value: "btw.dismiss",
       hidden: true,
-      keybind: "ctrl+b",
+      keybind: "ctrl+shift+b",
       enabled: () => visible(),
       onSelect: () => dismiss(),
     },
@@ -186,7 +186,7 @@ const tui: TuiPlugin = async (api) => {
                 </Show>
                 <Show when={done()}>
                   <text>{""}</text>
-                  <text fg={theme().textMuted}>press Ctrl+B to dismiss</text>
+                  <text fg={theme().textMuted}>press Ctrl+Shift+B to dismiss</text>
                 </Show>
               </box>
               <text fg={theme().textMuted}>{borderBot()}</text>
