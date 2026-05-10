@@ -111,13 +111,13 @@ const tui: TuiPlugin = async (api) => {
         pendingOp = pendingOp.then(() => ask(args.trim(), mainSessionID));
         return true;
       },
-    },
+    } as any,
     {
       title: "Dismiss btw panel",
       value: "btw.dismiss",
       hidden: true,
       keybind: "ctrl+shift+b",
-      enabled: () => visible(),
+      enabled: (() => visible()) as any,
       onSelect: () => dismiss(),
     },
   ]);
