@@ -176,9 +176,11 @@ describe("module exports", () => {
 // ── command registration ────────────────────────────────────────────────────
 
 describe("command registration", () => {
-  test("registers exactly one command", async () => {
+  test("registers btw and dismiss commands", async () => {
     const { api } = await setupPlugin();
-    expect(api._commands.length).toBe(1);
+    expect(api._commands.length).toBe(2);
+    expect(api._commands.find((c: any) => c.value === "btw")).toBeDefined();
+    expect(api._commands.find((c: any) => c.value === "btw.dismiss")).toBeDefined();
   });
 
   test("registers /btw with correct metadata", async () => {
